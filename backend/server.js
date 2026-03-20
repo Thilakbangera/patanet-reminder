@@ -1,15 +1,13 @@
 import express from 'express';
-import SibApiV3Sdk from '@getbrevo/brevo';
 import cors from 'cors';
 import dotenv from 'dotenv';
 
 dotenv.config();
 
-const app = express();
+const BREVO_API_KEY = process.env.BREVO_API_KEY;
+const BREVO_SENDER_EMAIL = process.env.BREVO_SENDER_EMAIL;
 
-// Brevo API setup
-const apiInstance = new SibApiV3Sdk.TransactionalEmailsApi();
-apiInstance.authentications['apiKey'].apiKey = process.env.BREVO_API_KEY;
+const app = express();
 
 // Middleware
 app.use(cors());
@@ -99,14 +97,28 @@ app.post('/api/send-reminder', async (req, res) => {
       </html>
     `;
 
-    const sendSmtpEmail = new SibApiV3Sdk.SendSmtpEmail();
-    sendSmtpEmail.subject = `📋 Patent Reminder: ${reminderType} - ${trackingCode}`;
-    sendSmtpEmail.htmlContent = emailHtml;
-    sendSmtpEmail.sender = { name: 'Lextria', email: process.env.BREVO_SENDER_EMAIL };
-    sendSmtpEmail.to = [{ email: drafterEmail, name: drafterName }];
+    const response = await fetch('https://api.brevo.com/v3/smtp/email', {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'api-key': BREVO_API_KEY,
+      },
+      body: JSON.stringify({
+        sender: { name: 'Lextria', email: BREVO_SENDER_EMAIL },
+        to: [{ email: drafterEmail, name: drafterName }],
+        subject: `📋 Patent Reminder: ${reminderType} - ${trackingCode}`,
+        htmlContent: emailHtml,
+      }),
+    });
 
-    const result = await apiInstance.sendTransacEmail(sendSmtpEmail);
-    console.log('Email sent successfully, messageId:', result.body?.messageId);
+    const result = await response.json();
+    if (!response.ok) {
+      console.error('Brevo error:', result);
+      return res.status(500).json({ success: false, message: result.message || 'Failed to send email' });
+    }
+
+    console.log('Email sent successfully, messageId:', result.messageId);
     res.json({ success: true, message: 'Email sent successfully' });
 
   } catch (error) {
