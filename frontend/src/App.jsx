@@ -1,5 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { Mail, Calendar, Plus, X, Eye, EyeOff, BarChart3, Clock, AlertCircle, CheckCircle2, Trash2, Edit2 } from 'lucide-react';
+import { Mail, Calendar, Plus, Eye, EyeOff, BarChart3, Clock, AlertCircle, Trash2, Edit2 } from 'lucide-react';
+import { createClient } from '@supabase/supabase-js';
+
+const supabase = createClient(
+  import.meta.env.VITE_SUPABASE_URL,
+  import.meta.env.VITE_SUPABASE_ANON_KEY
+);
 
 const PatentReminderSystem = () => {
   const [currentDrafter, setCurrentDrafter] = useState(null);
@@ -13,6 +19,7 @@ const PatentReminderSystem = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [authPassword, setAuthPassword] = useState('');
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [loading, setLoading] = useState(false);
 
   const drafters = [
     { id: 1, name: 'Abhishek', email: 'abhishek.drafter@gmail.com', color: 'from-blue-600 to-blue-400' },
@@ -45,21 +52,57 @@ const PatentReminderSystem = () => {
     description: '',
   });
 
+  // ── Fetch all data from Supabase on mount ──────────────────────────────────
   useEffect(() => {
-    const savedReminders = localStorage.getItem('reminders');
-    const savedPatents = localStorage.getItem('patents');
-    if (savedReminders) setReminders(JSON.parse(savedReminders));
-    if (savedPatents) setPatents(JSON.parse(savedPatents));
+    fetchAllData();
   }, []);
 
-  useEffect(() => {
-    localStorage.setItem('reminders', JSON.stringify(reminders));
-  }, [reminders]);
+  const fetchAllData = async () => {
+    setLoading(true);
+    try {
+      const [{ data: remindersData }, { data: patentsData }] = await Promise.all([
+        supabase.from('reminders').select('*').order('due_date', { ascending: true }),
+        supabase.from('patents').select('*').order('created_date', { ascending: false }),
+      ]);
+      if (remindersData) setReminders(remindersData.map(mapReminderFromDB));
+      if (patentsData) setPatents(patentsData.map(mapPatentFromDB));
+    } catch (err) {
+      console.error('Error fetching data:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
 
-  useEffect(() => {
-    localStorage.setItem('patents', JSON.stringify(patents));
-  }, [patents]);
+  // ── DB row ↔ JS object mappers (snake_case ↔ camelCase) ──────────────────
+  const mapReminderFromDB = (r) => ({
+    id: r.id,
+    drafterId: r.drafter_id,
+    drafterName: r.drafter_name,
+    drafterEmail: r.drafter_email,
+    trackingCode: r.tracking_code,
+    clientName: r.client_name,
+    reminderType: r.reminder_type,
+    dueDate: r.due_date,
+    reminderDays: r.reminder_days,
+    additionalComment: r.additional_comment,
+    createdDate: r.created_date,
+    status: r.status,
+  });
 
+  const mapPatentFromDB = (p) => ({
+    id: p.id,
+    drafterId: p.drafter_id,
+    drafterName: p.drafter_name,
+    patentNumber: p.patent_number,
+    title: p.title,
+    clientName: p.client_name,
+    applicationType: p.application_type,
+    status: p.status,
+    description: p.description,
+    createdDate: p.created_date,
+  });
+
+  // ── Handlers ──────────────────────────────────────────────────────────────
   const handleDrafterSelect = (drafter) => {
     setCurrentDrafter(drafter);
     setView('drafterDashboard');
@@ -73,70 +116,77 @@ const PatentReminderSystem = () => {
       return;
     }
 
-    const reminderData = {
+    const row = {
       id: editingReminder?.id || Date.now(),
-      drafterId: currentDrafter.id,
-      drafterName: currentDrafter.name,
-      drafterEmail: currentDrafter.email,
-      trackingCode: formData.trackingCode,
-      clientName: formData.clientName,
-      reminderType: formData.reminderType,
-      dueDate: formData.dueDate,
-      reminderDays: formData.reminderDays,
-      additionalComment: formData.additionalComment,
-      createdDate: editingReminder?.createdDate || new Date().toISOString().split('T')[0],
+      drafter_id: currentDrafter.id,
+      drafter_name: currentDrafter.name,
+      drafter_email: currentDrafter.email,
+      tracking_code: formData.trackingCode,
+      client_name: formData.clientName,
+      reminder_type: formData.reminderType,
+      due_date: formData.dueDate,
+      reminder_days: formData.reminderDays,
+      additional_comment: formData.additionalComment,
+      created_date: editingReminder?.createdDate || new Date().toISOString().split('T')[0],
       status: 'Active',
     };
 
+    let error;
     if (editingReminder) {
-      setReminders(reminders.map(r => r.id === editingReminder.id ? reminderData : r));
-      setEditingReminder(null);
+      ({ error } = await supabase.from('reminders').update(row).eq('id', editingReminder.id));
     } else {
-      setReminders([...reminders, reminderData]);
+      ({ error } = await supabase.from('reminders').insert(row));
     }
 
-    await sendReminderEmail(reminderData);
+    if (error) {
+      console.error('Supabase error:', error);
+      alert('❌ Failed to save reminder: ' + error.message);
+      return;
+    }
 
-    setFormData({
-      trackingCode: '',
-      clientName: '',
-      reminderType: 'IDF',
-      dueDate: '',
-      reminderDays: 3,
-      additionalComment: '',
-    });
+    await fetchAllData();
+    await sendReminderEmail({ ...mapReminderFromDB(row) });
+
+    setFormData({ trackingCode: '', clientName: '', reminderType: 'IDF', dueDate: '', reminderDays: 3, additionalComment: '' });
+    setEditingReminder(null);
     setShowReminderForm(false);
   };
 
-  const handleAddPatent = () => {
+  const handleAddPatent = async () => {
     if (!patentData.patentNumber || !patentData.title || !patentData.clientName) {
       alert('Please fill all required fields');
       return;
     }
 
-    const newPatent = {
+    const row = {
       id: editingPatent?.id || Date.now(),
-      drafterId: currentDrafter.id,
-      drafterName: currentDrafter.name,
-      ...patentData,
-      createdDate: editingPatent?.createdDate || new Date().toISOString().split('T')[0],
+      drafter_id: currentDrafter.id,
+      drafter_name: currentDrafter.name,
+      patent_number: patentData.patentNumber,
+      title: patentData.title,
+      client_name: patentData.clientName,
+      application_type: patentData.applicationType,
+      status: patentData.status,
+      description: patentData.description,
+      created_date: editingPatent?.createdDate || new Date().toISOString().split('T')[0],
     };
 
+    let error;
     if (editingPatent) {
-      setPatents(patents.map(p => p.id === editingPatent.id ? newPatent : p));
-      setEditingPatent(null);
+      ({ error } = await supabase.from('patents').update(row).eq('id', editingPatent.id));
     } else {
-      setPatents([...patents, newPatent]);
+      ({ error } = await supabase.from('patents').insert(row));
     }
 
-    setPatentData({
-      patentNumber: '',
-      title: '',
-      clientName: '',
-      applicationType: 'Utility',
-      status: 'Pending',
-      description: '',
-    });
+    if (error) {
+      console.error('Supabase error:', error);
+      alert('❌ Failed to save patent: ' + error.message);
+      return;
+    }
+
+    await fetchAllData();
+    setPatentData({ patentNumber: '', title: '', clientName: '', applicationType: 'Utility', status: 'Pending', description: '' });
+    setEditingPatent(null);
     setShowPatentForm(false);
   };
 
@@ -155,20 +205,24 @@ const PatentReminderSystem = () => {
         alert(`⚠️ Reminder saved but email may not have been sent.\nPlease check backend server.`);
       }
     } catch (error) {
-      console.log('Backend not running - reminder saved locally:', error);
-      alert(`✅ Reminder saved successfully!\n⚠️ Email notification requires backend server running on port 5000`);
+      console.log('Backend not running - reminder saved to cloud:', error);
+      alert(`✅ Reminder saved to cloud successfully!\n⚠️ Email notification requires backend server.`);
     }
   };
 
-  const deleteReminder = (id) => {
+  const deleteReminder = async (id) => {
     if (window.confirm('Are you sure you want to delete this reminder?')) {
-      setReminders(reminders.filter(r => r.id !== id));
+      const { error } = await supabase.from('reminders').delete().eq('id', id);
+      if (error) { alert('Failed to delete: ' + error.message); return; }
+      await fetchAllData();
     }
   };
 
-  const deletePatent = (id) => {
+  const deletePatent = async (id) => {
     if (window.confirm('Are you sure you want to delete this patent?')) {
-      setPatents(patents.filter(p => p.id !== id));
+      const { error } = await supabase.from('patents').delete().eq('id', id);
+      if (error) { alert('Failed to delete: ' + error.message); return; }
+      await fetchAllData();
     }
   };
 
@@ -198,27 +252,20 @@ const PatentReminderSystem = () => {
     setShowPatentForm(true);
   };
 
-  const getDrafterReminders = () => {
-    return reminders.filter(r => r.drafterId === currentDrafter.id);
-  };
+  const getDrafterReminders = () => reminders.filter(r => r.drafterId === currentDrafter.id);
+  const getDrafterPatents = () => patents.filter(p => p.drafterId === currentDrafter.id);
 
-  const getDrafterPatents = () => {
-    return patents.filter(p => p.drafterId === currentDrafter.id);
-  };
-
-  const getUpcomingReminders = () => {
-    return getDrafterReminders()
+  const getUpcomingReminders = () =>
+    getDrafterReminders()
       .filter(r => r.status === 'Active')
       .sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate))
       .slice(0, 5);
-  };
 
   const calculateDaysUntilDue = (dueDate) => {
     const today = new Date();
     const due = new Date(dueDate);
     const diffTime = due - today;
-    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-    return diffDays;
+    return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
   };
 
   const getStatusColor = (daysUntilDue) => {
@@ -228,6 +275,7 @@ const PatentReminderSystem = () => {
     return 'bg-green-100 border-green-300 text-green-700';
   };
 
+  // ── Auth screen ───────────────────────────────────────────────────────────
   if (!isAuthenticated) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 flex items-center justify-center p-4">
@@ -274,6 +322,7 @@ const PatentReminderSystem = () => {
     );
   }
 
+  // ── Dashboard ─────────────────────────────────────────────────────────────
   if (view === 'dashboard') {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950">
@@ -285,15 +334,15 @@ const PatentReminderSystem = () => {
               </div>
               <h1 className="text-2xl font-bold text-white">Patent Reminder System</h1>
             </div>
-            <button
-              onClick={() => {
-                setIsAuthenticated(false);
-                setAuthPassword('');
-              }}
-              className="px-4 py-2 text-slate-300 hover:text-white transition-colors text-sm font-medium"
-            >
-              Logout
-            </button>
+            <div className="flex items-center gap-4">
+              {loading && <span className="text-slate-400 text-sm animate-pulse">Syncing…</span>}
+              <button
+                onClick={() => { setIsAuthenticated(false); setAuthPassword(''); }}
+                className="px-4 py-2 text-slate-300 hover:text-white transition-colors text-sm font-medium"
+              >
+                Logout
+              </button>
+            </div>
           </div>
         </div>
 
@@ -376,6 +425,7 @@ const PatentReminderSystem = () => {
     );
   }
 
+  // ── Drafter Dashboard ─────────────────────────────────────────────────────
   if (view === 'drafterDashboard') {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950">
@@ -406,9 +456,7 @@ const PatentReminderSystem = () => {
 
             <div className="flex gap-2">
               <button
-                onClick={() => {
-                  setView('dashboardSummary');
-                }}
+                onClick={() => setView('dashboardSummary')}
                 className="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg transition-colors text-sm font-medium"
               >
                 <BarChart3 size={16} className="inline mr-2" />
@@ -421,20 +469,14 @@ const PatentReminderSystem = () => {
         <div className="max-w-7xl mx-auto px-6 py-8">
           <div className="flex gap-4 mb-8 border-b border-slate-700">
             <button
-              onClick={() => {
-                setShowReminderForm(false);
-                setShowPatentForm(false);
-              }}
+              onClick={() => { setShowReminderForm(false); setShowPatentForm(false); }}
               className="px-4 py-3 font-semibold text-white border-b-2 border-blue-500 text-sm"
             >
               <Clock size={16} className="inline mr-2" />
               Reminders
             </button>
             <button
-              onClick={() => {
-                setShowReminderForm(false);
-                setShowPatentForm(true);
-              }}
+              onClick={() => { setShowReminderForm(false); setShowPatentForm(true); }}
               className="px-4 py-3 font-semibold text-slate-400 hover:text-white transition-colors text-sm"
             >
               <AlertCircle size={16} className="inline mr-2" />
@@ -446,14 +488,7 @@ const PatentReminderSystem = () => {
             <>
               <button
                 onClick={() => {
-                  setFormData({
-                    trackingCode: '',
-                    clientName: '',
-                    reminderType: 'IDF',
-                    dueDate: '',
-                    reminderDays: 3,
-                    additionalComment: '',
-                  });
+                  setFormData({ trackingCode: '', clientName: '', reminderType: 'IDF', dueDate: '', reminderDays: 3, additionalComment: '' });
                   setEditingReminder(null);
                   setShowReminderForm(!showReminderForm);
                 }}
@@ -611,14 +646,7 @@ const PatentReminderSystem = () => {
             <>
               <button
                 onClick={() => {
-                  setPatentData({
-                    patentNumber: '',
-                    title: '',
-                    clientName: '',
-                    applicationType: 'Utility',
-                    status: 'Pending',
-                    description: '',
-                  });
+                  setPatentData({ patentNumber: '', title: '', clientName: '', applicationType: 'Utility', status: 'Pending', description: '' });
                   setEditingPatent(null);
                   setShowPatentForm(!showPatentForm);
                 }}
@@ -792,6 +820,7 @@ const PatentReminderSystem = () => {
     );
   }
 
+  // ── Performance Summary ───────────────────────────────────────────────────
   if (view === 'dashboardSummary') {
     const drafterReminders = getDrafterReminders();
     const drafterPatents = getDrafterPatents();
@@ -818,9 +847,7 @@ const PatentReminderSystem = () => {
           <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
             <div className="flex items-center gap-4">
               <button
-                onClick={() => {
-                  setView('drafterDashboard');
-                }}
+                onClick={() => setView('drafterDashboard')}
                 className="text-slate-400 hover:text-white transition-colors"
               >
                 ← Back
