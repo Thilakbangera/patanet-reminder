@@ -163,7 +163,7 @@ app.get('/api/health', (req, res) => {
 
 // Basic route
 app.get('/', (req, res) => {
-  res.json({ 
+  res.json({
     message: 'Patent Reminder System API Server',
     version: '1.0.0',
     endpoints: {
