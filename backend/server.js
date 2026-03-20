@@ -1,5 +1,5 @@
 import express from 'express';
-import * as Brevo from '@getbrevo/brevo';
+import SibApiV3Sdk from '@getbrevo/brevo';
 import cors from 'cors';
 import dotenv from 'dotenv';
 
@@ -8,8 +8,8 @@ dotenv.config();
 const app = express();
 
 // Brevo API setup
-const apiInstance = new Brevo.TransactionalEmailsApi();
-apiInstance.setApiKey(Brevo.TransactionalEmailsApiApiKeys.apiKey, process.env.BREVO_API_KEY);
+const apiInstance = new SibApiV3Sdk.TransactionalEmailsApi();
+apiInstance.authentications['apiKey'].apiKey = process.env.BREVO_API_KEY;
 
 // Middleware
 app.use(cors());
@@ -99,7 +99,7 @@ app.post('/api/send-reminder', async (req, res) => {
       </html>
     `;
 
-    const sendSmtpEmail = new Brevo.SendSmtpEmail();
+    const sendSmtpEmail = new SibApiV3Sdk.SendSmtpEmail();
     sendSmtpEmail.subject = `📋 Patent Reminder: ${reminderType} - ${trackingCode}`;
     sendSmtpEmail.htmlContent = emailHtml;
     sendSmtpEmail.sender = { name: 'Lextria', email: process.env.BREVO_SENDER_EMAIL };
